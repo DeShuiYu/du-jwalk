@@ -1,16 +1,16 @@
 use clap::Parser;
 use filesize::file_real_size_fast;
-use futures;
-use jwalk::WalkDir;
-use num_cpus;
-use std::fs;
+use std::fs::{read_dir};
 use std::io::{stderr, stdout, Write};
-use tokio;
+use std::path::Path;
+use std::time;
+
+type WalkDir = jwalk::WalkDirGeneric<((), Option<Result<std::fs::Metadata, jwalk::Error>>)>;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(
-    version = "0.0.2",
+    version = "1.0.1",
     about = "磁盘扫描工具",
     long_about = "高性能扫描文件夹下所有文件的总占用"
 )]
@@ -24,62 +24,72 @@ struct Args {
     execlude: Vec<String>,
 }
 
+fn iter_from_path(root: &Path) -> WalkDir {
+    WalkDir::new(root)
+        .follow_links(false)
+        .min_depth(0)
+        .sort(false)
+        .skip_hidden(false)
+        .process_read_dir({
+            move |_, _, _, dir_entry_results| {
+                dir_entry_results.iter_mut().for_each(|dir_entry_result| {
+                    if let Ok(dir_entry) = dir_entry_result {
+                        let metadata = dir_entry.metadata();
+                        dir_entry.client_state = Some(metadata);
+                    }
+                })
+            }
+        })
+        .parallelism(jwalk::Parallelism::RayonExistingPool {
+            pool: jwalk::rayon::ThreadPoolBuilder::new()
+                .stack_size(128 * 1024)
+                .num_threads(num_cpus::get())
+                .thread_name(|idx| format!("dua-fs-walk-{idx}"))
+                .build()
+                .expect("fields we set cannot fail")
+                .into(),
+            busy_timeout: None,
+        })
+}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    let args: Args = Args::parse();
+    let start = time::Instant::now();
+    let args = Args::parse();
     let mut tasks = vec![];
-    for entry in fs::read_dir(args.root)? {
-        let entry = entry?;
-        if args
+    let root = Path::new(&args.root);
+    for root_entry in read_dir(root)? {
+        let root_entry = root_entry?;
+        if !args.execlude.is_empty() && (args
             .execlude
-            .contains(&entry.file_name().to_str().unwrap().to_string())
+            .contains(&root_entry.file_name().to_str().unwrap().to_string())
+             || args.execlude.contains(&root_entry.path().to_str().unwrap().to_string())
+        )
         {
-            writeln!(
-                stderr(),
-                "\x1b[41m execlude file or dir:{}\x1b[0m",
-                entry.path().display()
-            );
-            stderr().flush();
+            writeln!(stderr(), "\x1b[41m execlude file or dir:{}\x1b[0m", root_entry.path().display()).expect("failed to write stderr");
+            stderr().flush()?;
             continue;
         }
         let task = tokio::spawn(async move {
-            let total_filesize = WalkDir::new(entry.path())
-                .follow_links(true)
-                .min_depth(0)
-                .sort(false)
-                .skip_hidden(false)
-                .parallelism(jwalk::Parallelism::RayonExistingPool {
-                    pool: jwalk::rayon::ThreadPoolBuilder::new()
-                        .stack_size(128 * 1024)
-                        .num_threads(num_cpus::get())
-                        .thread_name(|idx| format!("du-jwalk-{idx}"))
-                        .build()
-                        .expect("fields we set cannot fail")
-                        .into(),
-                    busy_timeout: None,
-                })
+            let total_filesize = iter_from_path(&root_entry.path())
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(|entry| entry.ok())
                 .filter(|entry| entry.file_type().is_file())
-                .map(|e| {
-                    e.metadata()
-                        .and_then(|m| file_real_size_fast(e.path & m))
+                .map(|entry| {
+                    file_real_size_fast(entry.path(), &entry.client_state.unwrap().unwrap())
                         .unwrap_or(0)
                 })
                 .sum::<u64>();
+            writeln!(stdout(),
+                     "{:>10},{}",
+                     humansize::format_size(total_filesize, humansize::DECIMAL),
+                     root_entry.path().display()
+            ).expect("failed to write stdout");
 
-            writeln!(
-                stdout(),
-                "\x1b[32m{:>10},\x1b[36m{}\x1b[0m",
-                humansize::format_size(total_filesize, humansize::DECIMAL),
-                entry.path().display()
-            );
-            stdout().flush();
+            let _ = stdout().flush();
         });
         tasks.push(task);
     }
     futures::future::join_all(tasks).await;
-    writeln!(stdout(),"total time:{}", humantime::format_duration(start.elapsed()));
+    println!("total time:{}", humantime::format_duration(start.elapsed()));
     Ok(())
 }
