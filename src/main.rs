@@ -110,7 +110,6 @@ async fn main() -> anyhow::Result<()> {
                 path: root_entry.path().display().to_string(),
             });
             drop(showInfos);
-            let _ = stdout().flush();
         });
         tasks.push(task);
     }
