@@ -16,4 +16,6 @@ jwalk = "0.8.1"
 num_cpus = "1.16.0"
 tokio = { version = "1.42.0", features = ["full"] }
 gix-path = "0.10.13"
-
+serde = { version = "~1.0", features = ["derive"] }
+csv = "~1.2"
+chrono = "~0.4"

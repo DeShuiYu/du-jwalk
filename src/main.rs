@@ -3,7 +3,9 @@ use filesize::file_real_size_fast;
 use std::fs::{read_dir};
 use std::io::{stderr, stdout, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time;
+use serde::Serialize;
 
 type WalkDir = jwalk::WalkDirGeneric<((), Option<Result<std::fs::Metadata, jwalk::Error>>)>;
 
@@ -22,6 +24,17 @@ struct Args {
     /// 输入需要排查的文件或者文件夹,多个用逗号隔开
     #[arg(short, long, value_delimiter = ',')]
     execlude: Vec<String>,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Serialize)]
+struct ShowInfo {
+    #[allow(non_snake_case)]
+    total_filesize_string: String,
+    #[allow(non_snake_case)]
+    filesSize_type: String,
+    #[allow(non_snake_case)]
+    path: String,
 }
 
 fn iter_from_path(root: &Path) -> WalkDir {
@@ -54,6 +67,8 @@ fn iter_from_path(root: &Path) -> WalkDir {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let start = time::Instant::now();
+    #[allow(non_snake_case)]
+    let showInfos = Arc::new(Mutex::new(Vec::new()));
     let args = Args::parse();
     let mut tasks = vec![];
     let root = Path::new(&args.root);
@@ -69,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
             stderr().flush()?;
             continue;
         }
+        #[allow(non_snake_case)]
+        let showInfos = showInfos.clone();
         let task = tokio::spawn(async move {
             let total_filesize = iter_from_path(&root_entry.path())
                 .into_iter()
@@ -84,12 +101,33 @@ async fn main() -> anyhow::Result<()> {
                      humansize::format_size(total_filesize, humansize::DECIMAL),
                      root_entry.path().display()
             ).expect("failed to write stdout");
-
+            #[allow(non_snake_case)]
+            let mut showInfos = showInfos.lock().unwrap();
+            let total_filesize_string = humansize::format_size(total_filesize, humansize::BINARY);
+            showInfos.push(ShowInfo {
+                total_filesize_string: total_filesize_string.clone(),
+                filesSize_type: total_filesize_string[total_filesize_string.len() - 3..].to_string(),
+                path: root_entry.path().display().to_string(),
+            });
+            drop(showInfos);
             let _ = stdout().flush();
         });
         tasks.push(task);
     }
     futures::future::join_all(tasks).await;
+
+    let output_path = format!("du-jwalk-{}.csv", chrono::Local::now().format("%Y%m%d"));
+    let mut wtr = csv::Writer::from_path(output_path)?;
+    let mut show_infos = showInfos.lock().unwrap();
+    show_infos.sort_by(|a, b| a.filesSize_type.cmp(&b.filesSize_type).then(a.path.cmp(&b.path)));
+    for show_info in show_infos.iter() {
+        wtr.write_record(&[
+            &show_info.total_filesize_string,
+            &show_info.filesSize_type,
+            &show_info.path
+        ])?;
+    }
+    wtr.flush()?;
     println!("total time:{}", humantime::format_duration(start.elapsed()));
     Ok(())
 }
