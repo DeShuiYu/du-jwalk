@@ -3,19 +3,28 @@ name = "du-jwalk"
 version = "0.1.0"
 edition = "2021"
 
-
-
 [dependencies]
 anyhow = "1.0.94"
+chrono = "~0.4"
 clap = { version = "4.5.23", features = ["derive"] }
+csv = "~1.2"
 filesize = "0.2.0"
 futures = "0.3.31"
+gix-path = "0.10.13"
 humansize = "2.1.3"
 humantime = "2.1.0"
 jwalk = "0.8.1"
 num_cpus = "1.16.0"
-tokio = { version = "1.42.0", features = ["full"] }
-gix-path = "0.10.13"
 serde = { version = "~1.0", features = ["derive"] }
-csv = "~1.2"
-chrono = "~0.4"
+tokio = { version = "1.42.0", features = ["full"] }
+
+[profile.release]
+opt-level = 3           # 最高优化级别
+lto = true             # 启用链接时优化
+codegen-units = 1      # 减少并行代码生成单元以提高优化
+panic = 'abort'        # 在 panic 时直接终止程序而不是展开堆栈
+strip = true           # 移除调试符号
+debug = false          # 禁用调试信息
+
+
+

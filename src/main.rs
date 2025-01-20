@@ -3,7 +3,8 @@ use filesize::file_real_size_fast;
 use std::fs::{read_dir};
 use std::io::{stderr, stdout, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use std::time;
 use serde::Serialize;
 
@@ -98,18 +99,17 @@ async fn main() -> anyhow::Result<()> {
                 .sum::<u64>();
             writeln!(stdout(),
                      "{:>10},{}",
-                     humansize::format_size(total_filesize, humansize::DECIMAL),
+                     humansize::format_size(total_filesize, humansize::BINARY),
                      root_entry.path().display()
             ).expect("failed to write stdout");
             #[allow(non_snake_case)]
-            let mut showInfos = showInfos.lock().unwrap();
+            let mut showInfos = showInfos.lock().await;
             let total_filesize_string = humansize::format_size(total_filesize, humansize::BINARY);
             showInfos.push(ShowInfo {
                 total_filesize_string: total_filesize_string.clone(),
-                filesSize_type: total_filesize_string[total_filesize_string.len() - 3..].to_string(),
+                filesSize_type: total_filesize_string.split(" ").last().unwrap().to_string(),
                 path: root_entry.path().display().to_string(),
             });
-            drop(showInfos);
         });
         tasks.push(task);
     }
@@ -117,16 +117,18 @@ async fn main() -> anyhow::Result<()> {
 
     let output_path = format!("du-jwalk-{}.csv", chrono::Local::now().format("%Y%m%d"));
     let mut wtr = csv::Writer::from_path(output_path)?;
-    let mut show_infos = showInfos.lock().unwrap();
+    let mut show_infos = showInfos.lock().await;
     show_infos.sort_by(|a, b| a.filesSize_type.cmp(&b.filesSize_type).then(a.path.cmp(&b.path)));
+    wtr.write_record(&["存储路径", "存储类型", "存储大小"])?;
     for show_info in show_infos.iter() {
         wtr.write_record(&[
-            &show_info.total_filesize_string,
+            &show_info.path,
             &show_info.filesSize_type,
-            &show_info.path
+            &show_info.total_filesize_string
         ])?;
     }
     wtr.flush()?;
+    drop(show_infos);
     println!("total time:{}", humantime::format_duration(start.elapsed()));
     Ok(())
 }
