@@ -13,7 +13,7 @@ type WalkDir = jwalk::WalkDirGeneric<((), Option<Result<std::fs::Metadata, jwalk
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(
-    version = "1.0.1",
+    version = "1.0.2",
     about = "磁盘扫描工具",
     long_about = "高性能扫描文件夹下所有文件的总占用"
 )]
