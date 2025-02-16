@@ -19,7 +19,7 @@ type WalkDir = jwalk::WalkDirGeneric<((), Option<Result<std::fs::Metadata, jwalk
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(
-    version = "1.0.2",
+    version = "1.0.3",
     about = "磁盘扫描工具",
     long_about = "高性能扫描文件夹下所有文件的总占用"
 )]
@@ -28,11 +28,11 @@ struct Args {
     #[arg(short, long, required = true)]
     root: String,
 
-    /// 输入需要排查的文件或者文件夹,多个用逗号隔开
+    /// 输入需要排除的文件或者文件夹路径,多个用逗号隔开
     #[arg(short, long, value_delimiter = ',')]
     execlude: Vec<String>,
 
-    /// csv结果文件保存路径
+    /// csv结果文件保存路径，默认不保存
     #[arg[long]]
     tocsv: Option<PathBuf>,
 }
