@@ -3,10 +3,16 @@ use filesize::file_real_size_fast;
 use std::fs::{read_dir};
 use std::io::{stderr, stdout, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time;
 use serde::Serialize;
+
+const Byte: u64 = 1 << (0 * 10);
+const Ki_Byte: u64 = 1 << (1 * 10);
+const Mi_Byte: u64 = 1 << (2 * 10);
+const Gi_Byte: u64 = 1 << (3 * 10);
+const Ti_Byte: u64 = 1 << (4 * 10);
+const Pi_Byte: u64 = 1 << (5 * 10);
+const Ei_Byte: u64 = 1 << (6 * 10);
 
 type WalkDir = jwalk::WalkDirGeneric<((), Option<Result<std::fs::Metadata, jwalk::Error>>)>;
 
@@ -30,16 +36,28 @@ struct Args {
     #[arg[long]]
     tocsv: Option<PathBuf>,
 }
-
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize)]
 struct ShowInfo {
     #[allow(non_snake_case)]
     total_filesize_string: String,
     #[allow(non_snake_case)]
-    filesSize_type: String,
+    total_filesize_type: String,
     #[allow(non_snake_case)]
-    path: String,
+    path: PathBuf,
+    total_filesize: String,
+}
+
+fn format_filesize_type(size: u64) -> String {
+    match size {
+        size if size > Ei_Byte => format!("EiB"),
+        size if size > Pi_Byte => format!("PiB"),
+        size if size > Ti_Byte => format!("TiB"),
+        size if size > Gi_Byte => format!("GiB"),
+        size if size > Mi_Byte => format!("MiB"),
+        size if size > Ki_Byte => format!("KiB"),
+        _ => format!("B"),
+    }
 }
 
 fn iter_from_path(root: &Path) -> WalkDir {
@@ -73,7 +91,7 @@ fn iter_from_path(root: &Path) -> WalkDir {
 async fn main() -> anyhow::Result<()> {
     let start = time::Instant::now();
     #[allow(non_snake_case)]
-    let showInfos = Arc::new(Mutex::new(Vec::new()));
+    let ( tx, mut rx) = tokio::sync::mpsc::channel::<ShowInfo>(256);
     let args = Args::parse();
     let mut tasks = vec![];
     let root = Path::new(&args.root);
@@ -89,8 +107,7 @@ async fn main() -> anyhow::Result<()> {
             stderr().flush()?;
             continue;
         }
-        #[allow(non_snake_case)]
-        let showInfos = showInfos.clone();
+        let tx_clone = tx.clone();
         let task = tokio::spawn(async move {
             let total_filesize = iter_from_path(&root_entry.path())
                 .into_iter()
@@ -106,19 +123,21 @@ async fn main() -> anyhow::Result<()> {
                      humansize::format_size(total_filesize, humansize::BINARY),
                      root_entry.path().display()
             ).expect("failed to write stdout");
-            #[allow(non_snake_case)]
-            let mut showInfos = showInfos.lock().await;
+
+
             let total_filesize_string = humansize::format_size(total_filesize, humansize::BINARY);
-            showInfos.push(ShowInfo {
-                total_filesize_string: total_filesize_string.clone(),
-                filesSize_type: total_filesize_string.split(" ").last().unwrap().to_string(),
-                path: root_entry.path().display().to_string(),
-            });
+            let total_filesize_type = format_filesize_type(total_filesize);
+            tx_clone.send(ShowInfo{
+                total_filesize:total_filesize.to_string(),
+                total_filesize_string:total_filesize_string,
+                total_filesize_type:total_filesize_type,
+                path: root_entry.path(),
+            }).await;
         });
         tasks.push(task);
     }
     futures::future::join_all(tasks).await;
-
+    drop(tx);
     match args.tocsv.is_some(){
         true => {
             let mut output_path = PathBuf::from(format!("du-jwalk-{}.csv", chrono::Local::now().format("%Y%m%d")));
@@ -127,24 +146,20 @@ async fn main() -> anyhow::Result<()> {
             }
             println!("CSV files write to {:?}",output_path.display());
             let mut wtr = csv::Writer::from_path(output_path)?;
-            let mut show_infos = showInfos.lock().await;
-            show_infos.sort_by(|a, b| a.filesSize_type.cmp(&b.filesSize_type).then(a.path.cmp(&b.path)));
             wtr.write_record(&["存储路径", "存储类型", "存储大小"])?;
-            for show_info in show_infos.iter() {
+            while let Some(info) = rx.recv().await {
                 wtr.write_record(&[
-                    &show_info.path,
-                    &show_info.filesSize_type,
-                    &show_info.total_filesize_string
+                    info.path.display().to_string(),
+                    info.total_filesize_type,
+                    info.total_filesize_string,
                 ])?;
             }
             wtr.flush()?;
-            drop(show_infos);
         },
         _ => {
             println!("no write to any files");
         }
     }
-
     println!("total time:{}", humantime::format_duration(start.elapsed()));
     Ok(())
 }
